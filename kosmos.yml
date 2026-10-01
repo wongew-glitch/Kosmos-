@@ -1,0 +1,477 @@
+name: Kosmos APK
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "kosmos.html"
+      - ".github/workflows/kosmos.yml"
+
+jobs:
+  bangun:
+    name: Bangun APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ambil isi repositori
+        uses: actions/checkout@v4
+
+      - name: Pastikan kosmos.html ada
+        run: |
+          if [ ! -f kosmos.html ]; then
+            echo "::error::kosmos.html tidak ada di akar repositori. Unggah berkasnya dulu, lalu jalankan lagi."
+            exit 1
+          fi
+          BYTES=$(wc -c < kosmos.html)
+          echo "kosmos.html ditemukan, $BYTES bita."
+          if [ "$BYTES" -lt 50000 ]; then
+            echo "::error::Berkasnya cuma $BYTES bita. Kosmos yang utuh sekitar 190.000 bita, jadi unggahannya kemungkinan terpotong."
+            exit 1
+          fi
+          grep -q "KOSMOS" kosmos.html || { echo "::error::Isi berkas tidak terlihat seperti Kosmos."; exit 1; }
+
+      - name: Siapkan JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Siapkan Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+
+      - name: Siapkan Android SDK
+        run: |
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          SDKM=$(find "$ANDROID_HOME/cmdline-tools" -type f -name sdkmanager 2>/dev/null | head -1)
+          if [ -n "$SDKM" ]; then
+            yes | "$SDKM" --licenses > /dev/null 2>&1 || true
+            "$SDKM" "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
+          else
+            echo "sdkmanager tidak ditemukan; memakai SDK bawaan runner apa adanya."
+          fi
+          ls "$ANDROID_HOME/platforms" || true
+
+      - name: Tulis proyek Android
+        run: |
+          mkdir -p app/src/main/java/id/kosmos/app
+          mkdir -p app/src/main/res/values app/src/main/res/drawable app/src/main/res/mipmap-anydpi-v26
+          mkdir -p app/src/main/assets
+
+          cat > settings.gradle <<'SETTINGS'
+          pluginManagement {
+            repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+            repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+            repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "Kosmos"
+          include ":app"
+          SETTINGS
+
+          cat > build.gradle <<'ROOTGRADLE'
+          plugins {
+            id "com.android.application" version "8.5.2" apply false
+          }
+          ROOTGRADLE
+
+          cat > gradle.properties <<'PROPS'
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          org.gradle.parallel=true
+          org.gradle.caching=true
+          android.useAndroidX=false
+          android.nonTransitiveRClass=true
+          PROPS
+
+          cat > app/build.gradle <<'APPGRADLE'
+          plugins { id "com.android.application" }
+
+          android {
+            namespace "id.kosmos.app"
+            compileSdk 34
+
+            defaultConfig {
+              applicationId "id.kosmos.app"
+              minSdk 24
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }
+
+            signingConfigs {
+              rilis {
+                storeFile file(System.getenv("KS_FILE") ?: "kosmos.keystore")
+                storePassword System.getenv("KS_PASS")
+                keyAlias System.getenv("KS_ALIAS")
+                keyPassword System.getenv("KS_PASS")
+              }
+            }
+
+            buildTypes {
+              release {
+                minifyEnabled false
+                signingConfig signingConfigs.rilis
+              }
+            }
+
+            compileOptions {
+              sourceCompatibility JavaVersion.VERSION_17
+              targetCompatibility JavaVersion.VERSION_17
+            }
+          }
+          APPGRADLE
+
+          cat > app/src/main/AndroidManifest.xml <<'MANIFEST'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application
+                android:label="@string/app_name"
+                android:icon="@mipmap/ic_launcher"
+                android:roundIcon="@mipmap/ic_launcher"
+                android:theme="@style/KosmosTheme"
+                android:allowBackup="true"
+                android:supportsRtl="false"
+                android:hardwareAccelerated="true">
+              <activity
+                  android:name=".MainActivity"
+                  android:exported="true"
+                  android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|smallestScreenSize|density"
+                  android:windowSoftInputMode="adjustResize"
+                  android:launchMode="singleTask">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          MANIFEST
+
+          cat > app/src/main/res/values/strings.xml <<'STRINGS'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <string name="app_name">Kosmos</string>
+          </resources>
+          STRINGS
+
+          cat > app/src/main/res/values/styles.xml <<'STYLES'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+            <style name="KosmosTheme" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+              <item name="android:windowBackground">@android:color/background_dark</item>
+            </style>
+            <color name="ic_launcher_background">#15181D</color>
+          </resources>
+          STYLES
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'LAUNCHER'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+            <background android:drawable="@color/ic_launcher_background" />
+            <foreground android:drawable="@drawable/ic_launcher_foreground" />
+            <monochrome android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          LAUNCHER
+
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'FOREGROUND'
+          <?xml version="1.0" encoding="utf-8"?>
+          <!-- the ringed planet from the app header, drawn on the 108dp adaptive canvas -->
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp" android:height="108dp"
+              android:viewportWidth="108" android:viewportHeight="108">
+            <group android:pivotX="54" android:pivotY="54" android:rotation="-24">
+              <path
+                  android:strokeColor="#8391F2" android:strokeWidth="3.1"
+                  android:strokeAlpha="0.55" android:fillColor="#00000000"
+                  android:pathData="M 54,43.2 m -25.2,0 a 25.2,10.1 0 1,0 50.4,0 a 25.2,10.1 0 1,0 -50.4,0" />
+            </group>
+            <path android:fillColor="#8391F2"
+                android:pathData="M 54,43.2 m -11.2,0 a 11.2,11.2 0 1,0 22.4,0 a 11.2,11.2 0 1,0 -22.4,0" />
+            <path android:fillColor="#4FC9C6"
+                android:pathData="M 74.1,33.9 m -3.6,0 a 3.6,3.6 0 1,0 7.2,0 a 3.6,3.6 0 1,0 -7.2,0" />
+          </vector>
+          FOREGROUND
+
+          cat > app/src/main/java/id/kosmos/app/MainActivity.java <<'ACTIVITY'
+          package id.kosmos.app;
+
+          import android.app.Activity;
+          import android.content.ContentValues;
+          import android.content.Intent;
+          import android.content.res.Configuration;
+          import android.net.Uri;
+          import android.os.Build;
+          import android.os.Bundle;
+          import android.os.Environment;
+          import android.provider.MediaStore;
+          import android.view.KeyEvent;
+          import android.view.ViewGroup;
+          import android.webkit.DownloadListener;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.ValueCallback;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.io.OutputStream;
+          import java.nio.charset.Charset;
+
+          public class MainActivity extends Activity {
+
+            /* The page is served from a made-up https origin instead of file://.
+               localStorage on a file:// page is unreliable and can be wiped between
+               launches — which for this app would mean losing the journal. A stable
+               origin keeps the same storage bucket every time. */
+            private static final String HOST = "kosmos.local";
+            private static final String BASE = "https://" + HOST + "/";
+
+            private WebView web;
+            private ValueCallback<Uri[]> pendingFiles;
+            private static final int PICK_FILE = 1101;
+
+            @Override
+            protected void onCreate(Bundle state) {
+              super.onCreate(state);
+
+              web = new WebView(this);
+              setContentView(web);
+
+              WebSettings s = web.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setDatabaseEnabled(true);
+              s.setAllowFileAccess(false);
+              s.setAllowContentAccess(false);
+              s.setMediaPlaybackRequiresUserGesture(true);
+
+              web.addJavascriptInterface(new Bridge(), "KosmosAndroid");
+
+              web.setWebViewClient(new WebViewClient() {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest req) {
+                  Uri u = req.getUrl();
+                  if (u == null || !HOST.equals(u.getHost())) return null;
+                  String path = u.getPath();
+                  if (path == null || path.equals("/")) path = "/index.html";
+                  return asset(path.substring(1));
+                }
+
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest req) {
+                  Uri u = req.getUrl();
+                  if (u != null && HOST.equals(u.getHost())) return false;
+                  /* anything that is not us opens in the real browser */
+                  try { startActivity(new Intent(Intent.ACTION_VIEW, u)); } catch (Exception e) { }
+                  return true;
+                }
+
+                @Override
+                public void onPageFinished(WebView v, String url) {
+                  applySystemTheme();
+                  /* The page's own download path builds a blob: URL, which Android cannot
+                     read. Point it at the bridge instead, so Export backup and the .ics
+                     file land in the Downloads folder like any other file. */
+                  v.evaluateJavascript(
+                    "(function(){ if(!window.KOSMOS) return;" +
+                    "  window.KOSMOS.download=function(name,text,mime){" +
+                    "    try{ KosmosAndroid.saveFile(name, text, mime||'application/json');" +
+                    "         var m=document.getElementById('bkMsg');" +
+                    "         if(m) m.textContent='Saved to your Downloads folder: '+name;" +
+                    "    }catch(e){}" +
+                    "  };})();", null);
+                }
+              });
+
+              /* Import backup uses a hidden <input type=file>. Without this the button
+                 does nothing at all inside a WebView. */
+              web.setWebChromeClient(new WebChromeClient() {
+                @Override
+                public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams params) {
+                  if (pendingFiles != null) pendingFiles.onReceiveValue(null);
+                  pendingFiles = cb;
+                  try {
+                    Intent i = params.createIntent();
+                    startActivityForResult(i, PICK_FILE);
+                    return true;
+                  } catch (Exception e) {
+                    pendingFiles = null;
+                    return false;
+                  }
+                }
+              });
+
+              /* Belt and braces: if anything still reaches the normal download path. */
+              web.setDownloadListener(new DownloadListener() {
+                @Override
+                public void onDownloadStart(String url, String ua, String disp, String mime, long len) {
+                  try { startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url))); } catch (Exception e) { }
+                }
+              });
+
+              if (state != null) web.restoreState(state);
+              else web.loadUrl(BASE + "index.html");
+            }
+
+            /* ---------- assets ---------- */
+
+            private WebResourceResponse asset(String name) {
+              try {
+                InputStream in = getAssets().open(name);
+                return new WebResourceResponse(mimeOf(name), "UTF-8", in);
+              } catch (Exception e) {
+                return null;
+              }
+            }
+
+            private static String mimeOf(String n) {
+              String l = n.toLowerCase();
+              if (l.endsWith(".html")) return "text/html";
+              if (l.endsWith(".css")) return "text/css";
+              if (l.endsWith(".js")) return "application/javascript";
+              if (l.endsWith(".json") || l.endsWith(".webmanifest")) return "application/json";
+              if (l.endsWith(".svg")) return "image/svg+xml";
+              if (l.endsWith(".png")) return "image/png";
+              if (l.endsWith(".jpg") || l.endsWith(".jpeg")) return "image/jpeg";
+              if (l.endsWith(".woff2")) return "font/woff2";
+              return "application/octet-stream";
+            }
+
+            /* ---------- theme ----------
+               The page decides its own colours, and its Theme button has three states.
+               Only when it is on "auto" do we tell it what the phone is set to. */
+
+            private void applySystemTheme() {
+              boolean night = (getResources().getConfiguration().uiMode
+                  & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+              web.evaluateJavascript(
+                "(function(n){ try{" +
+                "  var raw=localStorage.getItem('kosmos_v2'); var t='auto';" +
+                "  if(raw){ var o=JSON.parse(raw); if(o&&o.ui&&o.ui.theme) t=o.ui.theme; }" +
+                "  if(t==='auto') document.documentElement.setAttribute('data-theme', n?'dark':'light');" +
+                "}catch(e){} })(" + (night ? "true" : "false") + ");", null);
+            }
+
+            @Override
+            public void onConfigurationChanged(Configuration c) {
+              super.onConfigurationChanged(c);
+              if (web != null) applySystemTheme();
+            }
+
+            /* ---------- saving a file the page produced ---------- */
+
+            public class Bridge {
+              @JavascriptInterface
+              public void saveFile(final String name, final String text, final String mime) {
+                try {
+                  String safe = name.replaceAll("[^A-Za-z0-9._-]", "_");
+                  byte[] bytes = text.getBytes(Charset.forName("UTF-8"));
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentValues cv = new ContentValues();
+                    cv.put(MediaStore.MediaColumns.DISPLAY_NAME, safe);
+                    cv.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri target = getContentResolver().insert(
+                        MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY), cv);
+                    if (target != null) {
+                      OutputStream out = getContentResolver().openOutputStream(target);
+                      out.write(bytes);
+                      out.flush();
+                      out.close();
+                    }
+                  } else {
+                    File dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+                    if (dir != null) {
+                      if (!dir.exists()) dir.mkdirs();
+                      FileOutputStream out = new FileOutputStream(new File(dir, safe));
+                      out.write(bytes);
+                      out.flush();
+                      out.close();
+                    }
+                  }
+                } catch (Exception e) { }
+              }
+            }
+
+            /* ---------- plumbing ---------- */
+
+            @Override
+            protected void onActivityResult(int req, int res, Intent data) {
+              if (req != PICK_FILE) { super.onActivityResult(req, res, data); return; }
+              if (pendingFiles == null) return;
+              Uri[] out = null;
+              if (res == RESULT_OK && data != null && data.getData() != null) {
+                out = new Uri[]{ data.getData() };
+              }
+              pendingFiles.onReceiveValue(out);
+              pendingFiles = null;
+            }
+
+            @Override
+            public boolean onKeyDown(int code, KeyEvent ev) {
+              if (code == KeyEvent.KEYCODE_BACK && web != null && web.canGoBack()) {
+                web.goBack();
+                return true;
+              }
+              return super.onKeyDown(code, ev);
+            }
+
+            @Override
+            protected void onSaveInstanceState(Bundle out) {
+              super.onSaveInstanceState(out);
+              if (web != null) web.saveState(out);
+            }
+          }
+          ACTIVITY
+
+          echo "Berkas proyek yang ditulis:"
+          find app settings.gradle build.gradle gradle.properties -type f | sort
+
+      - name: Masukkan Kosmos ke dalam aplikasi
+        run: |
+          cp kosmos.html app/src/main/assets/index.html
+          echo "Aset: $(wc -c < app/src/main/assets/index.html) bita."
+
+      - name: Buat kunci penandatangan
+        run: |
+          keytool -genkeypair -v \
+            -keystore kosmos.keystore \
+            -alias kosmos \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass kosmos123 -keypass kosmos123 \
+            -dname "CN=Kosmos, OU=Pribadi, O=Kosmos, L=Tangsel, S=Banten, C=ID"
+          echo "KS_FILE=$(pwd)/kosmos.keystore" >> "$GITHUB_ENV"
+          echo "KS_PASS=kosmos123" >> "$GITHUB_ENV"
+          echo "KS_ALIAS=kosmos" >> "$GITHUB_ENV"
+
+      - name: Bangun APK
+        run: gradle --no-daemon assembleRelease
+
+      - name: Kumpulkan hasil
+        run: |
+          mkdir -p keluaran
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::Gradle selesai tapi tidak ada berkas APK."
+            find app/build/outputs -type f | head -40
+            exit 1
+          fi
+          cp "$APK" keluaran/Kosmos.apk
+          cp kosmos.keystore keluaran/kosmos.keystore
+          ls -lh keluaran/
+
+      - name: Unggah APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Kosmos-APK
+          path: keluaran/
+          if-no-files-found: error
